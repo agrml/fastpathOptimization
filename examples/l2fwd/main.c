@@ -185,29 +185,68 @@ print_stats(void)
 	printf("\n====================================================\n");
 }
 
+typedef struct ActionList {
+	uint8_t len;
+	uint8_t actionCodes[8];
+	/*
+	 * 0 -- drop
+	 * 1 -- output
+	 * */
+} ActionList;
+
+ActionList
+doLookup(struct rte_mbuf *pkt);
+
+void
+processActions(ActionList actions, struct rte_mbuf *pkt, unsigned src_port);
+
+ActionList
+doLookup(struct rte_mbuf *pkt)
+{
+	pkt = pkt;
+
+	ActionList outputAction;
+	outputAction.len = 1;
+	outputAction.actionCodes[0] = 1;
+	return outputAction;
+}
+
+void
+processActions(ActionList actions, struct rte_mbuf *pkt, unsigned src_port)
+{
+	int sent;
+	struct rte_eth_dev_tx_buffer *buffer;
+	unsigned dst_port;
+
+	for (uint8_t i = 0; i < actions.len; i++) {
+		switch (actions.actionCodes[i]) {
+			case 0:
+				break;
+			case 1:
+				dst_port = l2fwd_dst_ports[src_port];
+				buffer = tx_buffer[dst_port];
+				sent = rte_eth_tx_buffer(dst_port, 0, buffer, pkt);
+				if (sent) {
+					port_statistics[dst_port].tx += sent;
+				}
+				break;
+			case 2:
+				// change mac
+				break;
+			default:
+				break;
+		}
+	}
+}
+
 static void
 l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 {
-	struct ether_hdr *eth;
-	void *tmp;
-	unsigned dst_port;
-	int sent;
-	struct rte_eth_dev_tx_buffer *buffer;
-
-	dst_port = l2fwd_dst_ports[portid];
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
-
-	/* 02:00:00:00:00:xx */
-	tmp = &eth->d_addr.addr_bytes[0];
-	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
-
-	/* src addr */
-	ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
-
-	buffer = tx_buffer[dst_port];
-	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
-	if (sent)
-		port_statistics[dst_port].tx += sent;
+	ActionList actions = doLookup(m);
+//    if (actions) {
+//
+//    }
+	processActions(actions, m, portid);
 }
 
 /* main processing loop */
@@ -256,9 +295,9 @@ l2fwd_main_loop(void)
 		diff_tsc = cur_tsc - prev_tsc;
 		if (unlikely(diff_tsc > drain_tsc)) {
 
-			for (i = 0; i < qconf->n_rx_port; i++) {
+			for (i = 0; i < qconf->n_rx_port /*as n_tx_port???*/; i++) {
 
-				portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
+				portid = l2fwd_dst_ports[qconf->rx_port_list[i]];  // why not just `i`? why do we iterate over disabled ports instead of only enabled ones?
 				buffer = tx_buffer[portid];
 
 				sent = rte_eth_tx_buffer_flush(portid, 0, buffer);
