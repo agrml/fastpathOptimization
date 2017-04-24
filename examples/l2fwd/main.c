@@ -46,6 +46,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <inttypes.h>
 
 #include <rte_common.h>
 #include <rte_log.h>
@@ -71,6 +72,12 @@
 #include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
+#include <rte_hash.h>
+#include <rte_config.h>
+#include <rte_jhash.h>
+
+
+uint64_t SS;
 
 static volatile bool force_quit;
 
@@ -139,6 +146,38 @@ struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS];
 #define MAX_TIMER_PERIOD 86400 /* 1 day max */
 static int64_t timer_period = 10 * TIMER_MILLISECOND * 1000; /* default period is 10 seconds */
 
+/*My code starts here*/
+
+#define HASH_ENTRIES (1024*1024*1)
+/* table config*/
+#define HASH_LEN_OF13 (40 * 4)
+uint32_t HASH_LEN = 0;
+uint32_t N_TABLES = 0;
+
+typedef struct TableConfig {
+	const char *name;
+	uint32_t sz;
+} TableConfig;
+
+TableConfig *tablesConfigs = NULL;
+
+
+typedef struct ActionList {
+	uint8_t len;
+	uint8_t actionCodes[8];
+	/*
+	 * 0 -- drop
+	 * 1 -- output
+	 * */
+} ActionList;
+
+struct rte_hash **hashTablesUsual = NULL;
+struct rte_hash **hashTablesOptimized  = NULL;
+uint32_t hashTablesCount = 0;
+
+uint64_t timeStampUsual = 0;
+uint64_t timeStampOptimized = 0;
+
 /* Print out statistics on packets dropped */
 static void
 print_stats(void)
@@ -185,41 +224,34 @@ print_stats(void)
 	printf("\n====================================================\n");
 }
 
-typedef struct ActionList {
-	uint8_t len;
-	uint8_t actionCodes[8];
-	/*
-	 * 0 -- drop
-	 * 1 -- output
-	 * */
-} ActionList;
-
-ActionList
-doLookup(struct rte_mbuf *pkt);
+ActionList *
+execSlowPath(struct rte_mbuf *pkt);
 
 void
-processActions(ActionList actions, struct rte_mbuf *pkt, unsigned src_port);
+processActions(ActionList *actions, struct rte_mbuf *pkt, unsigned src_port);
 
-ActionList
-doLookup(struct rte_mbuf *pkt)
+static void setupHash(uint32_t hashLen, struct rte_hash **hashTable);
+
+ActionList *
+execSlowPath(struct rte_mbuf *pkt)
 {
 	pkt = pkt;
 
-	ActionList outputAction;
-	outputAction.len = 1;
-	outputAction.actionCodes[0] = 1;
+	ActionList *outputAction = malloc(sizeof(ActionList));
+	outputAction->len = 1;
+	outputAction->actionCodes[0] = 1;
 	return outputAction;
 }
 
 void
-processActions(ActionList actions, struct rte_mbuf *pkt, unsigned src_port)
+processActions(ActionList *actions, struct rte_mbuf *pkt, unsigned src_port)
 {
 	int sent;
 	struct rte_eth_dev_tx_buffer *buffer;
 	unsigned dst_port;
 
-	for (uint8_t i = 0; i < actions.len; i++) {
-		switch (actions.actionCodes[i]) {
+	for (uint8_t i = 0; i < actions->len; i++) {
+		switch (actions->actionCodes[i]) {
 			case 0:
 				break;
 			case 1:
@@ -239,14 +271,62 @@ processActions(ActionList actions, struct rte_mbuf *pkt, unsigned src_port)
 	}
 }
 
-static void
-l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
+void *
+trim(struct rte_mbuf *pkt);
+
+void *
+trim(struct rte_mbuf *pkt)
 {
-	ActionList actions = doLookup(m);
-//    if (actions) {
-//
+//	return rte_pktmbuf_mtod_offset(pkt, void *, )
+	return pkt;
+}
+
+void
+l2fwd_simple_forward(struct rte_mbuf *pkt, unsigned portid);
+
+void
+l2fwd_simple_forward(struct rte_mbuf *pkt, unsigned portid)
+{
+	void *headerBits;
+	ActionList *actions;
+	hash_sig_t h = 0;
+
+	uint64_t timeStamp = rte_rdtsc();
+    for (size_t i = 0; i < hashTablesCount; i++) {
+		headerBits = trim(pkt);
+		h = rte_hash_hash(hashTablesUsual[i], headerBits);
+	}
+	timeStampUsual += rte_rdtsc() - timeStamp;
+
+	timeStamp = rte_rdtsc();
+	for (size_t i = 0; i < hashTablesCount; i++) {
+		headerBits = trim(pkt);
+		h = rte_hash_hash(hashTablesOptimized[i], headerBits);
+	}
+	timeStampOptimized += rte_rdtsc() - timeStamp;
+
+	h = h + 1;
+
+
+//    if (rte_hash_lookup_with_hash_data(hash_table, headerBits, h, (void **)&actions)) {  // 0 as found
+        actions = execSlowPath(pkt);
 //    }
-	processActions(actions, m, portid);
+	processActions(actions, pkt, portid);
+}
+
+
+static void
+setupHash(uint32_t hashLen, struct rte_hash **hashTable)
+{
+    struct rte_hash_parameters hash_params = {
+		.name = "simple hash",
+		.entries = HASH_ENTRIES,
+		.key_len = hashLen,  // sizeof(trimmed_pkt)
+		.hash_func = rte_jhash,
+		.hash_func_init_val = 0,
+	};
+	hash_params.socket_id = rte_lcore_to_socket_id(rte_lcore_id());
+    *hashTable = rte_hash_create(&hash_params);
 }
 
 /* main processing loop */
@@ -345,6 +425,11 @@ l2fwd_main_loop(void)
 			}
 		}
 	}
+
+	// FIXME: correct only for port0
+	printf("# ticks on usual fastpath: %lu\n", timeStampUsual);
+	printf("# ticks on optimized fastpath: %lu\n", timeStampOptimized);
+//	printf("val: %lu\n", time_sum * N_TABLES / port_statistics[0].rx);
 }
 
 static int
@@ -735,6 +820,23 @@ main(int argc, char **argv)
 
 	check_all_ports_link_status(nb_ports, l2fwd_enabled_port_mask);
 
+	hashTablesCount = 3;
+
+	tablesConfigs = calloc(hashTablesCount, sizeof(TableConfig));
+	tablesConfigs[0].name = "mac learning";
+	tablesConfigs[0].sz = 6;
+	tablesConfigs[1].name = "some app (vlan)";
+	tablesConfigs[1].sz = 1;
+	tablesConfigs[2].name = "firewall";
+	tablesConfigs[2].sz = 6 + 6 + 5 * 2;
+
+	hashTablesUsual = calloc(hashTablesCount, sizeof(struct rte_hash *));
+	hashTablesOptimized = calloc(hashTablesCount, sizeof(struct rte_hash *));
+	for (size_t i = 0; i < hashTablesCount; i++) {
+		setupHash(HASH_LEN_OF13, &(hashTablesUsual[i]));
+		setupHash(tablesConfigs[i].sz, &(hashTablesOptimized[i]));
+	}
+
 	ret = 0;
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, NULL, CALL_MASTER);
@@ -754,6 +856,10 @@ main(int argc, char **argv)
 		printf(" Done\n");
 	}
 	printf("Bye...\n");
+
+	free(tablesConfigs);
+	free(hashTablesUsual);
+	free(hashTablesOptimized);
 
 	return ret;
 }
