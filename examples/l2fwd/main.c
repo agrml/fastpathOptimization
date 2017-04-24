@@ -151,8 +151,6 @@ static int64_t timer_period = 10 * TIMER_MILLISECOND * 1000; /* default period i
 #define HASH_ENTRIES (1024*1024*1)
 /* table config*/
 #define HASH_LEN_OF13 (40 * 4)
-uint32_t HASH_LEN = 0;
-uint32_t N_TABLES = 0;
 
 typedef struct TableConfig {
 	const char *name;
@@ -305,6 +303,7 @@ l2fwd_simple_forward(struct rte_mbuf *pkt, unsigned portid)
 	}
 	timeStampOptimized += rte_rdtsc() - timeStamp;
 
+	// nothing
 	h = h + 1;
 
 
@@ -386,7 +385,7 @@ l2fwd_main_loop(void)
 
 			}
 
-			/* if timer is enabled */
+			/* if timer is enabled: print statistics */
 			if (timer_period > 0) {
 
 				/* advance the timer */
@@ -425,11 +424,11 @@ l2fwd_main_loop(void)
 			}
 		}
 	}
-
-	// FIXME: correct only for port0
-	printf("# ticks on usual fastpath: %lu\n", timeStampUsual);
-	printf("# ticks on optimized fastpath: %lu\n", timeStampOptimized);
-//	printf("val: %lu\n", time_sum * N_TABLES / port_statistics[0].rx);
+	if (lcore_id == rte_get_master_lcore()) {
+		printf("# ticks on usual fastpath: %lu\n", timeStampUsual);
+		printf("# ticks on optimized fastpath: %lu\n", timeStampOptimized);
+		printf("increase: %lf\n", 1 - (double) timeStampOptimized / timeStampUsual);
+	}
 }
 
 static int

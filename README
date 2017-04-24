@@ -1,11 +1,6 @@
-DPDK is a set of libraries and drivers for fast packet processing.
-It supports many processor architectures and both FreeBSD and Linux.
+The application models work of OpenFlow software switch and compares it's performance with optimization and without.
+The optimization consists of using applications' specific to increase the switch performance.
+I create config for each flow table to store a set of match fields that can be used in that table.
+Using this config, I setup different hashing function parameters for each table to optimize the performance of switch's past path.
 
-The DPDK uses the Open Source BSD license for the core libraries and
-drivers. The kernel components are GPLv2 licensed.
-
-Please check the doc directory for release notes,
-API documentation, and sample application information.
-
-For questions and usage discussions, subscribe to: users@dpdk.org
-Report bugs and issues to the development mailing list: dev@dpdk.org
+The application is located at ./examples/l2fwd
